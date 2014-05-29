@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <stdio.h>
@@ -13,6 +14,7 @@
 
 #include "jk_thread_pool.h"
 #include "jk_hash.h"
+
 
 #define JHTTP_OK    0
 #define JHTTP_ERR   (-1)
@@ -24,7 +26,7 @@
 #define JHTTP_IS_ERR(ret)  ((ret) == JHTTP_ERR)
 #define JHTTP_IS_DONE(ret) ((ret) == JHTTP_DONE)
 
-#define JHTTP_DEFAULT_PORT    8080
+#define JHTTP_DEFAULT_PORT    80
 #define JHTTP_WORKER_THREADS  32
 
 #define JHTTP_METHOD_UNKNOW   0
@@ -35,9 +37,10 @@
 #define JHTTP_DEFAULT_BUFF_INCR    128
 #define JHTTP_BUFF_MAX_SIZE        2048
 
-#define JHTTP_CR    '\r'
-#define JHTTP_LF    '\n'
-#define JHTTP_CRLF  "\r\n"
+#define JHTTP_CR          '\r'
+#define JHTTP_LF          '\n'
+#define JHTTP_CRLF        "\r\n"
+#define JHTTP_CRLFCRLF    "\r\n\r\n"
 
 struct jhttp_connection;
 typedef jhttp_connection_callback(struct jhttp_connection *c);
@@ -132,37 +135,113 @@ void jhttp_reset_connection(struct jhttp_connection *c)
 }
 
 
+int jhttp_readdir(char *dir, char **retval)
+{
+    DIR *handle;
+    struct dirent *file;
+    char *retbuf, tmpbuf[1024];
+    int bufpos = 0, bufsize = 512;
+    int len;
+
+    handle = opendir(dir);
+    if (JHTTP_IS_NULL(handle)) {
+        return 0;
+    }
+
+    retbuf = malloc(bufsize);
+    if (JHTTP_IS_NULL(retbuf)) {
+        closedir(handle);
+        return 0;
+    }
+
+    while((file = readdir(handle)) != NULL) {
+
+        len = snprintf(tmpbuf, 1024, "<li><a href='./%s'>%s</a></li>\n",
+                                                    file->d_name, file->d_name);
+
+        if (bufsize - bufpos < len) {
+            int nsize = bufsize + len;
+            char *tmp = realloc(retbuf, nsize);
+
+            if (JHTTP_IS_NULL(tmp)) {
+                closedir(handle);
+                return 0;
+            }
+
+            retbuf = tmp;
+            bufsize = nsize;
+        }
+
+        memcpy(retbuf + bufpos, tmpbuf, len);
+        bufpos += len;
+    }
+
+    closedir(handle);
+
+    *retval = retbuf;
+
+    return bufpos;
+}
+
+
+#define JHTTP_SENDFILE 1
+#define JHTTP_SENDDIR  2
+
 int jhttp_connection_send_file(struct jhttp_connection *c)
 {
     char buffer[2048];
     struct stat stbuf;
-    FILE *fp;
+    int fd;
     int send_header_only = 0;
     int wbytes, nwrite = 0, n;
     char *keepalive;
+    char *dirbuf;
+    int dirbuf_len;
+    int which;
 
     if (stat(c->uri, &stbuf) == -1) {
-        wbytes = sprintf(buffer, "HTTP/1.1 404 Not Found\r\n\r\n");
+        wbytes = sprintf(buffer, "HTTP/1.1 404 Not Found" JHTTP_CRLF
+                                 "Server: JHTTPD" JHTTP_CRLFCRLF);
         send_header_only = 1;
 
     } else if (S_ISDIR(stbuf.st_mode)) {
-        wbytes = sprintf(buffer, "HTTP/1.1 403 Forbidden\r\n\r\n");
+
+        /* not allow access dir
+        wbytes = sprintf(buffer, "HTTP/1.1 403 Forbidden" JHTTP_CRLF
+                                 "Server: JHTTPD" JHTTP_CRLFCRLF);
         send_header_only = 1;
+        */
+
+        which = JHTTP_SENDDIR;
+
+        dirbuf_len = jhttp_readdir(c->uri, &dirbuf);
+
+        wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
+                                 "Content-Length: %d" JHTTP_CRLF
+                                 "Content-Type: text/html;charset=utf-8" JHTTP_CRLF
+                                 "Server: JHTTPD" JHTTP_CRLFCRLF,
+                                 dirbuf_len);
 
     } else {
 
-        fp = fopen(c->uri, "r");
+        fd = open(c->uri, O_RDONLY);
 
-        if (JHTTP_IS_NULL(fp)) {
-            wbytes = sprintf(buffer, "HTTP/1.1 500 Internal Server Error\r\n\r\n");
+        if (JHTTP_IS_ERR(fd)) {
+            wbytes = sprintf(buffer, "HTTP/1.1 500 Internal Server Error" JHTTP_CRLF
+                                     "Server: JHTTPD" JHTTP_CRLFCRLF);
             send_header_only = 1;
 
         } else {
-            wbytes = sprintf(buffer, "HTTP/1.1 200 OK\r\n"
-                                     "Content-Length: %d\r\n\r\n", stbuf.st_size);
+            which = JHTTP_SENDFILE;
+
+            wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
+                                     "Content-Length: %d" JHTTP_CRLF
+                                     "Server: JHTTPD" JHTTP_CRLFCRLF,
+                                     stbuf.st_size);
         }
     }
 
+    /* send header to client */
     while (nwrite < wbytes) {
         n = write(c->sock, buffer + nwrite, wbytes - nwrite);
         if (n > 0) {
@@ -170,25 +249,45 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         }
     }
 
-    if (send_header_only) {
+    if (send_header_only || c->method == JHTTP_METHOD_HEAD) {
         return JHTTP_DONE;
     }
 
-    while (!feof(fp)) {
+    if (which == JHTTP_SENDFILE) {
 
-        fread(buffer, 2048, 1, fp);
+        while (1) {
+            nwrite = 0;
+
+            wbytes = read(fd, buffer, 2048);
+            if (wbytes <= 0) {
+                break;
+            }
+
+            while (nwrite < wbytes) {
+                n = write(c->sock, buffer + nwrite, wbytes - nwrite);
+                if (n > 0) {
+                    nwrite += n;
+                }
+            }
+        }
+
+        close(fd);
+
+    } else {
 
         nwrite = 0;
-        wbytes = strlen(buffer);
+        wbytes = dirbuf_len;
 
-        while (nwrite < wbytes) {
-
-            n = write(c->sock, buffer + nwrite, wbytes - nwrite);
+        while (wbytes > nwrite) {
+            n = write(c->sock, dirbuf + nwrite, wbytes - nwrite);
             if (n > 0) {
                 nwrite += n;
             }
         }
+
+        free(dirbuf);
     }
+
 
     if (jk_hash_find(c->headers, "connection",
         sizeof("connection")-1, (void **)&keepalive) == JK_HASH_OK)
@@ -456,7 +555,7 @@ int jhttp_base_init()
     addr.sin_port = htons(JHTTP_DEFAULT_PORT);
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    if (bind(base.sock, (struct sockaddr *) &addr, sizeof(addr)) == -1) {
+    if (bind(base.sock, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
         close(base.sock);
         fprintf(stderr, "Fatal: failed to bind socket\n");
         return -1;
