@@ -1,3 +1,23 @@
+/*
+ * Copyright (c) 2013 - 2014, Liexusong <280259971@qq.com>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -135,7 +155,7 @@ void jhttp_reset_connection(struct jhttp_connection *c)
 }
 
 
-int jhttp_readdir(char *dir, char **retval)
+int jhttp_readdir(struct jhttp_connection *c, char **retval)
 {
     DIR *handle;
     struct dirent *file;
@@ -143,7 +163,7 @@ int jhttp_readdir(char *dir, char **retval)
     int bufpos = 0, bufsize = 512;
     int len;
 
-    handle = opendir(dir);
+    handle = opendir(c->uri);
     if (JHTTP_IS_NULL(handle)) {
         return 0;
     }
@@ -156,8 +176,8 @@ int jhttp_readdir(char *dir, char **retval)
 
     while((file = readdir(handle)) != NULL) {
 
-        len = snprintf(tmpbuf, 1024, "<li><a href='./%s'>%s</a></li>\n",
-                                                    file->d_name, file->d_name);
+        len = snprintf(tmpbuf, 1024, "<li><a href='%s'>%s</a></li>\n",
+                                        file->d_name, file->d_name);
 
         if (bufsize - bufpos < len) {
             int nsize = bufsize + len;
@@ -214,7 +234,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
 
         which = JHTTP_SENDDIR;
 
-        dirbuf_len = jhttp_readdir(c->uri, &dirbuf);
+        dirbuf_len = jhttp_readdir(c, &dirbuf);
 
         wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
                                  "Content-Length: %d" JHTTP_CRLF
@@ -336,10 +356,19 @@ jhttp_connection_parse_request_line(struct jhttp_connection *c)
 
             if (*current == ' ') {
                 int len = (current - found > 126 ? 126 : current - found);
+                char *ptr = found;
 
-                c->uri[0] = '.';
-                memcpy(c->uri + 1, found, len);
-                c->uri[len + 1] = '\0';
+                while (*ptr == '/') {
+                    ptr++; len--;
+                }
+
+                if (len == 0) {
+                    c->uri[0] = '.';
+                    c->uri[1] = '\0';
+                } else {
+                    memcpy(c->uri, ptr, len);
+                    c->uri[len + 1] = '\0';
+                }
 
                 state = jhttp_get_version_state;
                 found = current + 1;
