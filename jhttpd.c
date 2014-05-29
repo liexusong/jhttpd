@@ -3,6 +3,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <stdio.h>
@@ -96,7 +97,6 @@ int jhttp_connection_header_complete(struct jhttp_connection *c)
         case jhttp_state_3:
             if (*ptr == JHTTP_LF) {
                 c->end_header = ptr;
-                *ptr = '\0'; /* end of header */
                 return 0;
             } else {
                 state = jhttp_state_0;
@@ -226,18 +226,72 @@ jhttp_connection_parse_request_line(struct jhttp_connection *c)
 }
 
 
+#define jhttp_is_space(c)  \
+    ((c) == ' ' || (c) == JHTTP_CR || (c) == JHTTP_LF || (c) == '\t')
+
 int jhttp_connection_parse_header(struct jhttp_connection *c)
 {
-    char *found, *current;
+    char *start, *current;
+    char *key, *val;
+    int klen;
+    enum {
+        jhttp_header_none1_state,
+        jhttp_header_key_state,
+        jhttp_header_none2_state,
+        jhttp_header_val_state
+    } state = jhttp_header_none1_state;
 
-    current = jhttp_connection_parse_request_line(c);
+    start = current = jhttp_connection_parse_request_line(c);
 
     if (JHTTP_IS_NULL(current)) { /* not found request line */
         return JHTTP_ERR;
     }
 
     for (/* void */; current <= c->end_header; current++) {
-        
+
+        switch (state) {
+        case jhttp_header_none1_state:
+            if (!jhttp_is_space(*current)) { /* skip space */
+                key = current;
+                state = jhttp_header_key_state;
+            }
+            break;
+
+        case jhttp_header_key_state:
+            if (*current == ':' || jhttp_is_space(*current)) {
+                klen = current - key - 1;
+                state = jhttp_header_none2_state;
+            }
+            break;
+
+        case jhttp_header_none2_state:
+            if (!jhttp_is_space(*current)) {
+                val = current;
+                state = jhttp_header_val_state;
+            }
+            break;
+
+        case jhttp_header_val_state:
+            if (*current == JHTTP_LF) {
+                char *ptr = current - 1;
+
+                while (ptr >= start) { /* rtrim space */
+                    if (jhttp_is_space(*ptr)) {
+                        *ptr = '\0';
+                    } else {
+                        break;
+                    }
+                }
+                *current = '\0';
+
+                if (klen > 0) {
+                    jk_hash_insert(c->headers, key, klen, val, 0);
+                }
+
+                state = jhttp_header_none1_state;
+            }
+            break;
+        }
     }
 
     c->handler = jhttp_connection_send_file;
