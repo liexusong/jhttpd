@@ -176,8 +176,7 @@ int jhttp_readdir(struct jhttp_connection *c, char **retval)
 
     while((file = readdir(handle)) != NULL) {
 
-        len = snprintf(tmpbuf, 1024, "<li><a href='%s'>%s</a></li>\n",
-                                        file->d_name, file->d_name);
+        len = snprintf(tmpbuf, 1024, "<li>%s</li>\n", file->d_name);
 
         if (bufsize - bufpos < len) {
             int nsize = bufsize + len;
@@ -287,6 +286,8 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
                 n = write(c->sock, buffer + nwrite, wbytes - nwrite);
                 if (n > 0) {
                     nwrite += n;
+                } else {
+                    break;
                 }
             }
         }
@@ -302,6 +303,8 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
             n = write(c->sock, dirbuf + nwrite, wbytes - nwrite);
             if (n > 0) {
                 nwrite += n;
+            } else {
+                break;
             }
         }
 
@@ -356,19 +359,10 @@ jhttp_connection_parse_request_line(struct jhttp_connection *c)
 
             if (*current == ' ') {
                 int len = (current - found > 126 ? 126 : current - found);
-                char *ptr = found;
 
-                while (*ptr == '/') {
-                    ptr++; len--;
-                }
-
-                if (len == 0) {
-                    c->uri[0] = '.';
-                    c->uri[1] = '\0';
-                } else {
-                    memcpy(c->uri, ptr, len);
-                    c->uri[len + 1] = '\0';
-                }
+                c->uri[0] = '.';
+                memcpy(c->uri + 1, found, len);
+                c->uri[len + 1] = '\0';
 
                 state = jhttp_get_version_state;
                 found = current + 1;
@@ -663,6 +657,18 @@ void jhttp_main_loop()
 
 int main()
 {
+    struct sigaction sa;
+
+    sa.sa_handler = SIG_IGN;
+    sa.sa_flags = 0;
+
+    if (sigemptyset(&sa.sa_mask) == -1 ||
+        sigaction(SIGPIPE, &sa, 0) == -1)
+    {
+        perror("Fatal: failed to ignore SIGPIPE; sigaction");
+        exit(1);
+    }
+
     chdir("./");
 
     if (JHTTP_IS_ERR(jhttp_base_init())) {
@@ -673,4 +679,3 @@ int main()
 
     exit(0);
 }
-
