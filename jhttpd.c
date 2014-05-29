@@ -58,6 +58,8 @@ struct jhttp_connection {
 };
 
 
+int jhttp_connection_read_header(struct jhttp_connection *c);
+
 static struct jhttp_base base;
 
 
@@ -109,6 +111,27 @@ int jhttp_connection_header_complete(struct jhttp_connection *c)
 }
 
 
+void jhttp_reset_connection(struct jhttp_connection *c)
+{
+    jk_hash_free(c->headers);
+    
+    if (c->rpos > c->end_header) {
+        int tomove = c->rpos - c->end_header;
+        memmove(c->rbuf, c->end_header + 1, tomove);
+        c->rpos = c->rbuf + tomove;
+    } else {
+        c->rpos = c->rbuf;
+    }
+
+    c->method = JHTTP_METHOD_UNKNOW;
+    c->headers = jk_hash_new(0, NULL, NULL);
+    c->end_header = NULL;
+    c->handler = &jhttp_connection_read_header;
+
+    return;
+}
+
+
 int jhttp_connection_send_file(struct jhttp_connection *c)
 {
     char buffer[2048];
@@ -116,6 +139,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
     FILE *fp;
     int send_header_only = 0;
     int wbytes, nwrite = 0, n;
+    char *keepalive;
 
     if (stat(c->uri, &stbuf) == -1) {
         wbytes = sprintf(buffer, "HTTP/1.1 404 Not Found\r\n\r\n");
@@ -163,6 +187,15 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
             if (n > 0) {
                 nwrite += n;
             }
+        }
+    }
+
+    if (jk_hash_find(c->headers, "connection",
+        sizeof("connection")-1, (void **)&keepalive) == JK_HASH_OK)
+    {
+        if (!strncasecmp("keep-alive", keepalive, sizeof("keep-alive")-1)) {
+            jhttp_reset_connection(c);
+            return JHTTP_OK;
         }
     }
 
@@ -226,6 +259,20 @@ jhttp_connection_parse_request_line(struct jhttp_connection *c)
 }
 
 
+void jhttp_tolower(char *str, int len)
+{
+    int fix = 'a' - 'A';
+    int i;
+
+    for (i = 0; i < len; i++) {
+        if (str[i] >= 'A' && str[i] <= 'Z') {
+            str[i] += fix;
+        }
+    }
+    return;
+}
+
+
 #define jhttp_is_space(c)  \
     ((c) == ' ' || (c) == JHTTP_CR || (c) == JHTTP_LF || (c) == '\t')
 
@@ -259,7 +306,7 @@ int jhttp_connection_parse_header(struct jhttp_connection *c)
 
         case jhttp_header_key_state:
             if (*current == ':' || jhttp_is_space(*current)) {
-                klen = current - key - 1;
+                klen = current - key;
                 state = jhttp_header_none2_state;
             }
             break;
@@ -285,6 +332,7 @@ int jhttp_connection_parse_header(struct jhttp_connection *c)
                 *current = '\0';
 
                 if (klen > 0) {
+                    jhttp_tolower(key, klen);
                     jk_hash_insert(c->headers, key, klen, val, 0);
                 }
 
