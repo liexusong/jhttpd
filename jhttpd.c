@@ -37,6 +37,7 @@
 #include "jk_thread_pool.h"
 #include "jk_hash.h"
 
+#define JHTTP_VERSION  "0.1"
 
 #define JHTTP_OK    0
 #define JHTTP_ERR   (-1)
@@ -72,6 +73,7 @@ struct jhttp_base {
     int port;
     int threads;
     int daemon;
+    char *root;
     jk_thread_pool_t *thread_pool;
 };
 
@@ -658,11 +660,12 @@ void jhttp_main_loop()
 
 static void jhttp_usage()
 {
-    fprintf(stderr, "JHTTPD Usage: ./jhttpd [OPTION] ...\n\n");
+    fprintf(stderr, "JHTTPD v%s Usage: ./jhttpd [OPTION] ...\n\n", JHTTP_VERSION);
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "-d, --daemon        Daemon mode\n");
     fprintf(stderr, "-p, --port=PORT     Server listen port, default 80\n");
     fprintf(stderr, "-t, --threads=NUMS  Worker thread numbers\n");
+    fprintf(stderr, "-r, --root=PATH     The server root path\n");
     fprintf(stderr, "-h, --help          Show the help\n");
     exit(0);
 }
@@ -673,6 +676,7 @@ void jhttp_default_options()
     base.port = JHTTP_DEFAULT_PORT;
     base.daemon = 0;
     base.threads = JHTTP_WORKER_THREADS;
+    base.root = "./";
 }
 
 
@@ -683,11 +687,12 @@ int jhttp_options(int argc, char *argv[])
         {"port",        1,  NULL,  'p'},
         {"daemon",      0,  NULL,  'd'},
         {"threads",     0,  NULL,  't'},
+        {"root",        0,  NULL,  'r'},
         {"help",        0,  NULL,  'h'},
         {NULL,          0,  NULL,    0}
     };
 
-    while ((opt = getopt_long(argc, argv, "p:dt:h", lopts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "p:dt:r:h", lopts, NULL)) != -1) {
         switch (opt) {
         case 'p':
             base.port = atoi(optarg);
@@ -705,6 +710,9 @@ int jhttp_options(int argc, char *argv[])
             if (base.threads <= 0) {
                 base.threads = 10;
             }
+            break;
+        case 'r':
+            base.root = strdup(optarg);
             break;
         case 'h':
         default:
@@ -751,11 +759,14 @@ int main(int argc, char *argv[])
     if (sigemptyset(&sa.sa_mask) == -1 ||
         sigaction(SIGPIPE, &sa, 0) == -1)
     {
-        perror("Fatal: failed to ignore SIGPIPE; sigaction");
+        fprintf(stderr, "Fatal: failed to ignore SIGPIPE; sigaction");
         exit(1);
     }
 
-    chdir("./");
+    if (chdir(base.root) == -1) {
+        fprintf(stderr, "Fatal: failed to chdir(%s)\n", base.root);
+        exit(1);
+    }
 
     if (JHTTP_IS_ERR(jhttp_base_init())) {
         exit(1);
