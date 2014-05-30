@@ -27,10 +27,12 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdlib.h>
+#include <getopt.h>
 
 #include "jk_thread_pool.h"
 #include "jk_hash.h"
@@ -67,6 +69,9 @@ typedef jhttp_connection_callback(struct jhttp_connection *c);
 
 struct jhttp_base {
     int sock;
+    int port;
+    int threads;
+    int daemon;
     jk_thread_pool_t *thread_pool;
 };
 
@@ -224,12 +229,6 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         send_header_only = 1;
 
     } else if (S_ISDIR(stbuf.st_mode)) {
-
-        /* not allow access dir
-        wbytes = sprintf(buffer, "HTTP/1.1 403 Forbidden" JHTTP_CRLF
-                                 "Server: JHTTPD" JHTTP_CRLFCRLF);
-        send_header_only = 1;
-        */
 
         which = JHTTP_SENDDIR;
 
@@ -507,8 +506,7 @@ int jhttp_connection_read_header(struct jhttp_connection *c)
             fprintf(stderr, "Notcie: failed to read data from connection\n");
             return JHTTP_ERR;
         } else if (nbytes == 0) {
-            fprintf(stderr, "Notcie: connection was closed, socket(%d)\n", c->sock);
-            return JHTTP_ERR;
+            return JHTTP_DONE;
         }
 
         c->rpos += nbytes;
@@ -518,6 +516,7 @@ int jhttp_connection_read_header(struct jhttp_connection *c)
         }
     }
 }
+
 
 struct jhttp_connection *jhttp_get_connection(int sock)
 {
@@ -546,6 +545,7 @@ struct jhttp_connection *jhttp_get_connection(int sock)
     return c;
 }
 
+
 void jhttp_close_connection(struct jhttp_connection *c)
 {
     close(c->sock);
@@ -554,6 +554,7 @@ void jhttp_close_connection(struct jhttp_connection *c)
     free(c);
     return;
 }
+
 
 int jhttp_base_init()
 {
@@ -575,7 +576,7 @@ int jhttp_base_init()
 #endif
 
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(JHTTP_DEFAULT_PORT);
+    addr.sin_port = htons(base.port);
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(base.sock, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
@@ -590,7 +591,7 @@ int jhttp_base_init()
         return -1;
     }
 
-    base.thread_pool = jk_thread_pool_new(JHTTP_WORKER_THREADS);
+    base.thread_pool = jk_thread_pool_new(base.threads);
     if (JHTTP_IS_NULL(base.thread_pool)) {
         fprintf(stderr, "Fatal: failed to create thread pool\n");
         return -1;
@@ -655,9 +656,94 @@ void jhttp_main_loop()
 }
 
 
-int main()
+static void jhttp_usage()
+{
+    fprintf(stderr, "JHTTPD Usage: ./jhttpd [OPTION] ...\n\n");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "-d, --daemon        Daemon mode\n");
+    fprintf(stderr, "-p, --port=PORT     Server listen port, default 80\n");
+    fprintf(stderr, "-t, --threads=NUMS  Worker thread numbers\n");
+    fprintf(stderr, "-h, --help          Show the help\n");
+    exit(0);
+}
+
+
+void jhttp_default_options()
+{
+    base.port = JHTTP_DEFAULT_PORT;
+    base.daemon = 0;
+    base.threads = JHTTP_WORKER_THREADS;
+}
+
+
+int jhttp_options(int argc, char *argv[])
+{
+    int opt;
+    struct option lopts[] = {
+        {"port",        1,  NULL,  'p'},
+        {"daemon",      0,  NULL,  'd'},
+        {"threads",     0,  NULL,  't'},
+        {"help",        0,  NULL,  'h'},
+        {NULL,          0,  NULL,    0}
+    };
+
+    while ((opt = getopt_long(argc, argv, "p:dt:h", lopts, NULL)) != -1) {
+        switch (opt) {
+        case 'p':
+            base.port = atoi(optarg);
+            if (base.port < 1 || base.port > 65535) {
+                fprintf(stderr, "Fatal: input port number %d invaild, "
+                                "must between 1 - 65535.\n", base.port);
+                return -1;
+            }
+            break;
+        case 'd':
+            base.daemon = 1;
+            break;
+        case 't':
+            base.threads = atoi(optarg);
+            if (base.threads <= 0) {
+                base.threads = 10;
+            }
+            break;
+        case 'h':
+        default:
+            jhttp_usage();
+            break;
+        }
+    }
+}
+
+
+void jhttp_daemon()
+{
+    int fd;
+
+    if (fork() != 0) {
+        exit(0);
+    }
+
+    setsid();
+
+    if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
+        dup2(fd, STDIN_FILENO);
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        if (fd > STDERR_FILENO) close(fd);
+    }
+}
+
+
+int main(int argc, char *argv[])
 {
     struct sigaction sa;
+
+    jhttp_default_options();
+    jhttp_options(argc, argv);
+
+    if (base.daemon) {
+        jhttp_daemon();
+    }
 
     sa.sa_handler = SIG_IGN;
     sa.sa_flags = 0;
@@ -679,3 +765,4 @@ int main()
 
     exit(0);
 }
+
