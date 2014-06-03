@@ -202,6 +202,10 @@ void jhttp_reset_connection(struct jhttp_connection *c)
 }
 
 
+#define jhttp_is_letter(c)             \
+    (((c) >= 'A' && (c) <= 'Z') ||     \
+     ((c) >= 'a' && (c) <= 'z'))
+
 int jhttp_connection_send_file(struct jhttp_connection *c)
 {
     char buffer[2048];
@@ -227,7 +231,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
 
     } else {
         char datebuf[128], extbuf[16], *ext, *mimetype = "text/plain";
-        int i;
+        int len;
 
         strftime(datebuf, sizeof(datebuf), "%a, %d %b %Y %H:%M:%S GMT",
                                                      gmtime(&(stbuf.st_mtime)));
@@ -235,14 +239,15 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         /* find the mime type */
         for (ext = c->uri + 1; *ext && *ext != '.'; ext++);
 
-        if (*ext == '.') {
-            for (i = 0, ext += 1; *ext; i++, ext++) {
-                extbuf[i] = *ext;
+        if (*ext == '.') { /* found extension */
+            for (len = 0, ext += 1; jhttp_is_letter(*ext); ext++) {
+                extbuf[len++] = *ext;
             }
-            extbuf[i] = '\0';
 
-            jk_hash_find(base.mimetype_table, extbuf, i - 1,
-                 (void **)&mimetype);
+            if (len > 0) {
+                jk_hash_find(base.mimetype_table, extbuf, len,
+                             (void **)&mimetype);
+            }
         }
 
         wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
@@ -609,25 +614,27 @@ void jhttp_close_connection(struct jhttp_connection *c)
 
 void jhttp_init_mimetype_table()
 {
-    struct jhttp_mimetype *mime = extension_map;
+    struct jhttp_mimetype *type = extension_map;
     char *skey, *ekey;
 
-    while (mime->mime != NULL) {
-        skey = ekey = mime->exts;
+    while (type->mime != NULL) {
+        skey = ekey = type->exts;
 
         while (*ekey) {
 
             if (*ekey == ',') {
-                jk_hash_insert(base.mimetype_table, skey, ekey - skey, mime->mime, 1);
+                jk_hash_insert(base.mimetype_table, skey,
+                               ekey - skey, type->mime, 1);
 
                 skey = ekey + 1;
             }
             ekey++;
         }
 
-        jk_hash_insert(base.mimetype_table, skey, ekey - skey - 1, mime->mime, 1);
+        jk_hash_insert(base.mimetype_table, skey,
+                       ekey - skey, type->mime, 1);
 
-        mime++;
+        type++;
     }
 }
 
