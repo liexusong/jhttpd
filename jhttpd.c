@@ -36,8 +36,9 @@
 
 #include "jk_thread_pool.h"
 #include "jk_hash.h"
+#include "jmalloc.h"
 
-#define JHTTP_VERSION  "0.1"
+#define JHTTP_VERSION  "0.2"
 
 #define JHTTP_OK    0
 #define JHTTP_ERR   (-1)
@@ -74,6 +75,7 @@ struct jhttp_base {
     int threads;
     int daemon;
     char *root;
+    int timeout;
     jk_thread_pool_t *thread_pool;
 };
 
@@ -91,6 +93,17 @@ struct jhttp_connection {
 int jhttp_connection_read_header(struct jhttp_connection *c);
 
 static struct jhttp_base base;
+
+
+int jhttp_set_nonblocking(int fd)
+{
+    int flags;
+
+    if ((flags = fcntl(fd, F_GETFL, 0)) < 0 ||
+         fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        return -1;
+    return 0;
+}
 
 
 int jhttp_connection_header_complete(struct jhttp_connection *c)
@@ -162,68 +175,17 @@ void jhttp_reset_connection(struct jhttp_connection *c)
 }
 
 
-int jhttp_readdir(struct jhttp_connection *c, char **retval)
-{
-    DIR *handle;
-    struct dirent *file;
-    char *retbuf, tmpbuf[1024];
-    int bufpos = 0, bufsize = 512;
-    int len;
-
-    handle = opendir(c->uri);
-    if (JHTTP_IS_NULL(handle)) {
-        return 0;
-    }
-
-    retbuf = malloc(bufsize);
-    if (JHTTP_IS_NULL(retbuf)) {
-        closedir(handle);
-        return 0;
-    }
-
-    while((file = readdir(handle)) != NULL) {
-
-        len = snprintf(tmpbuf, 1024, "<li>%s</li>\n", file->d_name);
-
-        if (bufsize - bufpos < len) {
-            int nsize = bufsize + len;
-            char *tmp = realloc(retbuf, nsize);
-
-            if (JHTTP_IS_NULL(tmp)) {
-                closedir(handle);
-                return 0;
-            }
-
-            retbuf = tmp;
-            bufsize = nsize;
-        }
-
-        memcpy(retbuf + bufpos, tmpbuf, len);
-        bufpos += len;
-    }
-
-    closedir(handle);
-
-    *retval = retbuf;
-
-    return bufpos;
-}
-
-
-#define JHTTP_SENDFILE 1
-#define JHTTP_SENDDIR  2
-
 int jhttp_connection_send_file(struct jhttp_connection *c)
 {
     char buffer[2048];
     struct stat stbuf;
-    int fd;
+    int fd = -1;
     int send_header_only = 0;
     int wbytes, nwrite = 0, n;
     char *keepalive;
-    char *dirbuf;
-    int dirbuf_len;
-    int which;
+    fd_set set;
+    struct timeval tv;
+    int result;
 
     if (stat(c->uri, &stbuf) == -1) {
         wbytes = sprintf(buffer, "HTTP/1.1 404 Not Found" JHTTP_CRLF
@@ -232,40 +194,56 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
 
     } else if (S_ISDIR(stbuf.st_mode)) {
 
-        which = JHTTP_SENDDIR;
-
-        dirbuf_len = jhttp_readdir(c, &dirbuf);
-
-        wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
-                                 "Content-Length: %d" JHTTP_CRLF
-                                 "Content-Type: text/html;charset=utf-8" JHTTP_CRLF
-                                 "Server: JHTTPD" JHTTP_CRLFCRLF,
-                                 dirbuf_len);
+        wbytes = sprintf(buffer, "HTTP/1.1 403 Forbidden" JHTTP_CRLF
+                                 "Server: JHTTPD" JHTTP_CRLFCRLF);
+        send_header_only = 1;
 
     } else {
 
-        fd = open(c->uri, O_RDONLY);
+        wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
+                                 "Content-Length: %d" JHTTP_CRLF
+                                 "Server: JHTTPD" JHTTP_CRLFCRLF,
+                                 stbuf.st_size);
 
-        if (JHTTP_IS_ERR(fd)) {
-            wbytes = sprintf(buffer, "HTTP/1.1 500 Internal Server Error" JHTTP_CRLF
-                                     "Server: JHTTPD" JHTTP_CRLFCRLF);
-            send_header_only = 1;
-
-        } else {
-            which = JHTTP_SENDFILE;
-
-            wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
-                                     "Content-Length: %d" JHTTP_CRLF
-                                     "Server: JHTTPD" JHTTP_CRLFCRLF,
-                                     stbuf.st_size);
+        if (c->method != JHTTP_METHOD_HEAD) {
+            fd = open(c->uri, O_RDONLY);
+            if (JHTTP_IS_ERR(fd)) {
+                wbytes = sprintf(buffer,
+                                 "HTTP/1.1 500 Internal Server Error" JHTTP_CRLF
+                                 "Server: JHTTPD" JHTTP_CRLFCRLF);
+                send_header_only = 1;
+            }
         }
     }
 
+    tv.tv_sec = base.timeout / 1000;
+    tv.tv_usec = (base.timeout % 1000) * 1000;
+
     /* send header to client */
     while (nwrite < wbytes) {
+
+        FD_ZERO(&set);
+        FD_SET(c->sock, &set);
+
+        result = select(c->sock + 1, NULL, &set, NULL, &tv);
+        if (result == 0) {
+            fprintf(stderr, "Notice: connection(%d) was timeout and closing\n", c->sock);
+            goto eflag;
+        }
+
         n = write(c->sock, buffer + nwrite, wbytes - nwrite);
-        if (n > 0) {
+        switch (n) {
+        case 0: /* connection was closed */
+            goto eflag;
+            break;
+        case -1:
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                goto eflag;
+            }
+            break;
+        default:
             nwrite += n;
+            break;
         }
     }
 
@@ -273,45 +251,43 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         return JHTTP_DONE;
     }
 
-    if (which == JHTTP_SENDFILE) {
+    for ( ;; ) {
 
-        while (1) {
-            nwrite = 0;
-
-            wbytes = read(fd, buffer, 2048);
-            if (wbytes <= 0) {
-                break;
-            }
-
-            while (nwrite < wbytes) {
-                n = write(c->sock, buffer + nwrite, wbytes - nwrite);
-                if (n > 0) {
-                    nwrite += n;
-                } else {
-                    break;
-                }
-            }
+        FD_ZERO(&set);
+        FD_SET(c->sock, &set);
+        
+        result = select(c->sock + 1, NULL, &set, NULL, &tv);
+        if (result == 0) {
+            fprintf(stderr, "Notice: connection(%d) was timeout and closing\n", c->sock);
+            goto eflag;
         }
-
-        close(fd);
-
-    } else {
 
         nwrite = 0;
-        wbytes = dirbuf_len;
 
-        while (wbytes > nwrite) {
-            n = write(c->sock, dirbuf + nwrite, wbytes - nwrite);
-            if (n > 0) {
+        wbytes = read(fd, buffer, 2048);
+        if (wbytes <= 0) {
+            break;
+        }
+
+        while (nwrite < wbytes) {
+            n = write(c->sock, buffer + nwrite, wbytes - nwrite);
+            switch (n) {
+            case 0: /* connection was closed */
+                goto eflag;
+                break;
+            case -1:
+                if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    goto eflag;
+                }
+                break;
+            default:
                 nwrite += n;
-            } else {
                 break;
             }
         }
-
-        free(dirbuf);
     }
 
+    close(fd);
 
     if (jk_hash_find(c->headers, "connection",
         sizeof("connection")-1, (void **)&keepalive) == JK_HASH_OK)
@@ -323,6 +299,14 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
     }
 
     return JHTTP_DONE;
+
+
+eflag:
+
+    if (!JHTTP_IS_ERR(fd)) {
+        close(fd);
+    }
+    return JHTTP_ERR;
 }
 
 
@@ -361,9 +345,13 @@ jhttp_connection_parse_request_line(struct jhttp_connection *c)
             if (*current == ' ') {
                 int len = (current - found > 126 ? 126 : current - found);
 
-                c->uri[0] = '.';
-                memcpy(c->uri + 1, found, len);
-                c->uri[len + 1] = '\0';
+                if (found[0] != '/') {
+                    c->uri[0] = '\0';
+                } else {
+                    c->uri[0] = '.';
+                    memcpy(c->uri + 1, found, len);
+                    c->uri[len + 1] = '\0';
+                }
 
                 state = jhttp_get_version_state;
                 found = current + 1;
@@ -473,7 +461,9 @@ int jhttp_connection_parse_header(struct jhttp_connection *c)
 
 int jhttp_connection_read_header(struct jhttp_connection *c)
 {
-    int remain, nbytes;
+    fd_set set;
+    struct timeval tv;
+    int remain, nbytes, result;
 
     for ( ;; ) {
 
@@ -503,8 +493,20 @@ int jhttp_connection_read_header(struct jhttp_connection *c)
             remain = c->rend - c->rpos;
         }
 
+        tv.tv_sec = base.timeout / 1000;
+        tv.tv_usec = (base.timeout % 1000) * 1000;
+
+        FD_ZERO(&set);
+        FD_SET(c->sock, &set);
+
+        result = select(c->sock + 1, &set, NULL, NULL, &tv);
+        if (result == 0) {
+            fprintf(stderr, "Notice: connection(%d) was timeout and closing\n", c->sock);
+            return JHTTP_DONE;
+        }
+
         nbytes = read(c->sock, c->rpos, remain);
-        if (nbytes == -1) {
+        if (nbytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
             fprintf(stderr, "Notcie: failed to read data from connection\n");
             return JHTTP_ERR;
         } else if (nbytes == 0) {
@@ -524,7 +526,7 @@ struct jhttp_connection *jhttp_get_connection(int sock)
 {
     struct jhttp_connection *c;
 
-    c = malloc(sizeof(*c));
+    c = jmalloc(sizeof(*c));
     if (JHTTP_IS_NULL(c)) {
         return NULL;
     }
@@ -535,10 +537,10 @@ struct jhttp_connection *jhttp_get_connection(int sock)
     c->end_header = NULL;
     c->handler = &jhttp_connection_read_header;
 
-    c->rbuf = malloc(JHTTP_DEFAULT_RBUF_SIZE);
+    c->rbuf = jmalloc(JHTTP_DEFAULT_RBUF_SIZE);
     if (JHTTP_IS_NULL(c->rbuf)) {
         jk_hash_free(c->headers);
-        free(c);
+        jfree(c);
         return NULL;
     }
     c->rpos = c->rbuf;
@@ -552,8 +554,8 @@ void jhttp_close_connection(struct jhttp_connection *c)
 {
     close(c->sock);
     jk_hash_free(c->headers);
-    free(c->rbuf);
-    free(c);
+    jfree(c->rbuf);
+    jfree(c);
     return;
 }
 
@@ -576,6 +578,12 @@ int jhttp_base_init()
 #if !defined(TCP_NOPUSH)
     setsockopt(base.sock, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof(flags));
 #endif
+
+    if (jhttp_set_nonblocking(base.sock) == -1) {
+        close(base.sock);
+        fprintf(stderr, "Fatal: failed to set socket nonblocking\n");
+        return -1;
+    }
 
     addr.sin_family = AF_INET;
     addr.sin_port = htons(base.port);
@@ -620,37 +628,65 @@ void jhttp_connection_loop(void *arg)
 }
 
 
+void jhttp_timer()
+{
+    fprintf(stderr, "JHTTPD: usage memory %d bytes\n", jmalloc_usage_memory());
+}
+
+
 void jhttp_main_loop()
 {
+    fd_set set;
+    struct timeval tv;
     int sock;
     socklen_t len;
     struct sockaddr addr;
     struct jhttp_connection *c;
-    int ret;
+    int ret, _exit = 0;
+    int failed = 0;
+
+    tv.tv_sec = 10;
+    tv.tv_usec = 0;
 
     for ( ;; ) {
 
-        sock = accept(base.sock, &addr, &len);
-        if (sock == -1) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                fprintf(stderr, "Notice: failed to accept client connection\n");
-            }
+        FD_ZERO(&set);
+        FD_SET(base.sock, &set);
+
+        if (select(base.sock + 1, &set, NULL, NULL, &tv) == -1) {
+            fprintf(stderr, "Notice: select(socket) failed\n");
             continue;
         }
 
-        c = jhttp_get_connection(sock);
-        if (JHTTP_IS_NULL(c)) {
-            fprintf(stderr, "Fatal: failed to get connection and exiting\n");
-            close(sock);
-            break;
-        }
+        jhttp_timer();
 
-        ret = jk_thread_pool_push(base.thread_pool,
-                                  &jhttp_connection_loop, c, NULL);
-        if (JHTTP_IS_ERR(ret)) {
-            fprintf(stderr, "Fatal: failed to process connection and exiting\n");
-            jhttp_close_connection(c);
-            break;
+        for ( ;; ) {
+
+            sock = accept(base.sock, &addr, &len);
+            if (sock == -1) { /* no more client to accept */
+                break;
+            }
+    
+            if (jhttp_set_nonblocking(sock) == -1) {
+                fprintf(stderr, "Notice: failed to set socket to nonblocking\n");
+                close(sock);
+                continue;
+            }
+    
+            c = jhttp_get_connection(sock);
+            if (JHTTP_IS_NULL(c)) {
+                fprintf(stderr, "Notice: failed to get connection and exiting\n");
+                close(sock);
+                continue;
+            }
+    
+            ret = jk_thread_pool_push(base.thread_pool,
+                                      &jhttp_connection_loop, c, NULL);
+            if (JHTTP_IS_ERR(ret)) {
+                fprintf(stderr, "Notice: failed to process connection and exiting\n");
+                jhttp_close_connection(c);
+                continue;
+            }
         }
     }
 
@@ -666,6 +702,7 @@ static void jhttp_usage()
     fprintf(stderr, "-p, --port=PORT     Server listen port, default 80\n");
     fprintf(stderr, "-t, --threads=NUMS  Worker thread numbers\n");
     fprintf(stderr, "-r, --root=PATH     The server root path\n");
+    fprintf(stderr, "-o, --timeout=MSEC  Connection timeout msec\n");
     fprintf(stderr, "-h, --help          Show the help\n");
     exit(0);
 }
@@ -677,6 +714,7 @@ void jhttp_default_options()
     base.daemon = 0;
     base.threads = JHTTP_WORKER_THREADS;
     base.root = "./";
+    base.timeout = 5000;
 }
 
 
@@ -688,11 +726,12 @@ int jhttp_options(int argc, char *argv[])
         {"daemon",      0,  NULL,  'd'},
         {"threads",     0,  NULL,  't'},
         {"root",        0,  NULL,  'r'},
+        {"timeout",     0,  NULL,  'o'},
         {"help",        0,  NULL,  'h'},
         {NULL,          0,  NULL,    0}
     };
 
-    while ((opt = getopt_long(argc, argv, "p:dt:r:h", lopts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "p:dt:r:o:h", lopts, NULL)) != -1) {
         switch (opt) {
         case 'p':
             base.port = atoi(optarg);
@@ -713,6 +752,12 @@ int jhttp_options(int argc, char *argv[])
             break;
         case 'r':
             base.root = strdup(optarg);
+            break;
+        case 'o':
+            base.timeout = atoi(optarg);
+            if (base.timeout < 0) {
+                base.timeout = 5000;
+            }
             break;
         case 'h':
         default:
@@ -776,4 +821,5 @@ int main(int argc, char *argv[])
 
     exit(0);
 }
+
 
