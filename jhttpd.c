@@ -101,22 +101,22 @@ int jhttp_connection_read_header(struct jhttp_connection *c);
 static struct jhttp_mimetype extension_map[] = {
     {"application/ogg",      "ogg"},
     {"application/pdf",      "pdf"},
-    {"application/xml",      "xsl xml"},
+    {"application/xml",      "xsl,xml"},
     {"application/xml-dtd",  "dtd"},
     {"application/xslt+xml", "xslt"},
     {"application/zip",      "zip"},
-    {"audio/mpeg",           "mp2 mp3 mpga"},
+    {"audio/mpeg",           "mp2,mp3,mpga"},
     {"image/gif",            "gif"},
-    {"image/jpeg",           "jpeg jpe jpg"},
+    {"image/jpeg",           "jpeg,jpe,jpg"},
     {"image/png",            "png"},
     {"text/css",             "css"},
-    {"text/html",            "html htm"},
+    {"text/html",            "html,htm"},
     {"text/javascript",      "js"},
-    {"text/plain",           "txt asc"},
-    {"video/mpeg",           "mpeg mpe mpg"},
-    {"video/quicktime",      "qt mov"},
+    {"text/plain",           "txt,asc"},
+    {"video/mpeg",           "mpeg,mpe,mpg"},
+    {"video/quicktime",      "qt,mov"},
     {"video/x-msvideo",      "avi"},
-    NULL
+	{NULL,                   NULL}
 };
 
 static struct jhttp_base base;
@@ -226,16 +226,31 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         send_header_only = 1;
 
     } else {
-        char datebuf[128];
+        char datebuf[128], extbuf[16], *ext, *mimetype = "text/plain";
+        int i;
 
         strftime(datebuf, sizeof(datebuf), "%a, %d %b %Y %H:%M:%S GMT",
                                                      gmtime(&(stbuf.st_mtime)));
 
+        /* find the mime type */
+        for (ext = c->uri + 1; *ext && *ext != '.'; ext++);
+
+        if (*ext == '.') {
+            for (i = 0, ext += 1; *ext; i++, ext++) {
+                extbuf[i] = *ext;
+            }
+            extbuf[i] = '\0';
+
+            jk_hash_find(base.mimetype_table, extbuf, i - 1,
+                 (void **)&mimetype);
+        }
+
         wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
                                  "Content-Length: %d" JHTTP_CRLF
+                                 "Content-Type: %s" JHTTP_CRLF
                                  "Last-Modified: %s" JHTTP_CRLF
                                  "Server: JHTTPD" JHTTP_CRLFCRLF,
-                                 (int)stbuf.st_size, datebuf);
+                                 (int)stbuf.st_size, mimetype, datebuf);
 
         if (c->method != JHTTP_METHOD_HEAD) {
             fd = open(c->uri, O_RDONLY);
@@ -596,32 +611,23 @@ void jhttp_init_mimetype_table()
 {
     struct jhttp_mimetype *mime = extension_map;
     char *skey, *ekey;
-    char key[16];
-    int len;
 
-    while (mime != NULL) {
+    while (mime->mime != NULL) {
         skey = ekey = mime->exts;
 
         while (*ekey) {
 
-            if (*ekey == ' ') {
-                len = ekey - skey;
-                memcpy(key, skey, len);
-                key[len] = '\0';
+            if (*ekey == ',') {
+                jk_hash_insert(base.mimetype_table, skey, ekey - skey, mime->mime, 1);
 
-                jk_hash_insert(base.mimetype_table, key, len, mime->mime);
-                printf("Insert %s => %s to mimetype table\n", key, mime->mime);
-                while (*ekey == ' ') {
-                    ekey++;
-                }
-                skey = ekey;
+                skey = ekey + 1;
             }
-
             ekey++;
         }
 
-        jk_hash_insert(base.mimetype_table, skey, ekey - skey, mime->mime);
-        printf("Insert %s => %s to mimetype table\n", skey, mime->mime);
+        jk_hash_insert(base.mimetype_table, skey, ekey - skey - 1, mime->mime, 1);
+
+        mime++;
     }
 }
 
@@ -673,7 +679,7 @@ int jhttp_base_init()
         return -1;
     }
 
-    base.mimetype_table = jk_hash_new(0);
+    base.mimetype_table = jk_hash_new(0, NULL, NULL);
     if (JHTTP_IS_NULL(base.mimetype_table)) {
         fprintf(stderr, "Fatal: failed to create mimetype table\n");
         return -1;
@@ -898,6 +904,4 @@ int main(int argc, char *argv[])
 
     exit(0);
 }
-
-
 
