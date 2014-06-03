@@ -240,8 +240,13 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         for (ext = c->uri + 1; *ext && *ext != '.'; ext++);
 
         if (*ext == '.') { /* found extension */
+
             for (len = 0, ext += 1; jhttp_is_letter(*ext); ext++) {
-                extbuf[len++] = *ext;
+                if (*ext >= 'A' && *ext <= 'Z') { /* upper to lower */
+                    extbuf[len++] = (*ext) + ('a' - 'Z');
+                } else {
+                    extbuf[len++] = *ext;
+                }
             }
 
             if (len > 0) {
