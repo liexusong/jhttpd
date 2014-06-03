@@ -116,7 +116,7 @@ static struct jhttp_mimetype extension_map[] = {
     {"video/mpeg",           "mpeg,mpe,mpg"},
     {"video/quicktime",      "qt,mov"},
     {"video/x-msvideo",      "avi"},
-	{NULL,                   NULL}
+    {NULL,                   NULL}
 };
 
 static struct jhttp_base base;
@@ -243,7 +243,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
 
             for (len = 0, ext += 1; jhttp_is_letter(*ext); ext++) {
                 if (*ext >= 'A' && *ext <= 'Z') { /* upper to lower */
-                    extbuf[len++] = (*ext) + ('a' - 'Z');
+                    extbuf[len++] = *ext + ('a' - 'Z');
                 } else {
                     extbuf[len++] = *ext;
                 }
