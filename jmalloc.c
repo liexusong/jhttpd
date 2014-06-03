@@ -63,6 +63,8 @@ void *jrealloc(void *ptr, int nsize)
     __sync_fetch_and_sub(&__jmalloc_usage_total, osize);
     __sync_fetch_and_add(&__jmalloc_usage_total, nsize);
 
+    m->size = nsize;
+
     return (void *)((char *)m + sizeof(jhttp_mem_head));
 }
 
