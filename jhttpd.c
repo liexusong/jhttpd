@@ -642,16 +642,15 @@ void jhttp_main_loop()
     socklen_t len;
     struct sockaddr addr;
     struct jhttp_connection *c;
-    int ret, _exit = 0;
-    int failed = 0;
-
-    tv.tv_sec = 10;
-    tv.tv_usec = 0;
+    int ret;
 
     for ( ;; ) {
 
         FD_ZERO(&set);
         FD_SET(base.sock, &set);
+
+        tv.tv_sec = 10;
+        tv.tv_usec = 0;
 
         if (select(base.sock + 1, &set, NULL, NULL, &tv) == -1) {
             fprintf(stderr, "Notice: select(socket) failed\n");
@@ -821,5 +820,6 @@ int main(int argc, char *argv[])
 
     exit(0);
 }
+
 
 
