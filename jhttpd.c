@@ -24,7 +24,7 @@
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <sys/stat.h>
-#include <dirent.h>
+#include <signal.h>
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -203,7 +203,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
                                  "Content-Length: %d" JHTTP_CRLF
                                  "Server: JHTTPD" JHTTP_CRLFCRLF,
-                                 stbuf.st_size);
+                                 (int)stbuf.st_size);
 
         if (c->method != JHTTP_METHOD_HEAD) {
             fd = open(c->uri, O_RDONLY);
