@@ -480,9 +480,9 @@ int jhttp_connection_read_header(struct jhttp_connection *c)
                 return JHTTP_ERR;
             }
 
-            temp = realloc(c->rbuf, nsize);
+            temp = jrealloc(c->rbuf, nsize);
             if (JHTTP_IS_NULL(temp)) {
-                fprintf(stderr, "Notcie: not enough memory to realloc read buffer\n");
+                fprintf(stderr, "Notcie: not enough memory to jrealloc read buffer\n");
                 return JHTTP_ERR;
             }
 
