@@ -199,11 +199,16 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         send_header_only = 1;
 
     } else {
+        char datebuf[128];
+
+        strftime(datebuf, sizeof(datebuf), "%a, %d %b %Y %H:%M:%S GMT",
+                                                     gmtime(&(stbuf.st_mtime)));
 
         wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
                                  "Content-Length: %d" JHTTP_CRLF
+                                 "Last-Modified: %s" JHTTP_CRLF
                                  "Server: JHTTPD" JHTTP_CRLFCRLF,
-                                 (int)stbuf.st_size);
+                                 (int)stbuf.st_size, datebuf);
 
         if (c->method != JHTTP_METHOD_HEAD) {
             fd = open(c->uri, O_RDONLY);
@@ -630,7 +635,11 @@ void jhttp_connection_loop(void *arg)
 
 void jhttp_timer()
 {
-    fprintf(stderr, "JHTTPD: usage memory %d bytes\n", jmalloc_usage_memory());
+    int mem = jmalloc_usage_memory();
+
+    if (mem > 1024 * 1024 * 10) {
+        fprintf(stderr, "Notice: usage memory %d bytes > 10MB\n", mem);
+    }
 }
 
 
