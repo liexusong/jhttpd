@@ -77,6 +77,7 @@ struct jhttp_base {
     char *root;
     int timeout;
     jk_thread_pool_t *thread_pool;
+    jk_hash_t *mimetype_table;
 };
 
 struct jhttp_connection {
@@ -89,8 +90,34 @@ struct jhttp_connection {
     jhttp_connection_callback *handler;
 };
 
+struct jhttp_mimetype {
+    char *mime;
+    char *exts;
+};
+
 
 int jhttp_connection_read_header(struct jhttp_connection *c);
+
+static struct jhttp_mimetype extension_map[] = {
+    {"application/ogg",      "ogg"},
+    {"application/pdf",      "pdf"},
+    {"application/xml",      "xsl xml"},
+    {"application/xml-dtd",  "dtd"},
+    {"application/xslt+xml", "xslt"},
+    {"application/zip",      "zip"},
+    {"audio/mpeg",           "mp2 mp3 mpga"},
+    {"image/gif",            "gif"},
+    {"image/jpeg",           "jpeg jpe jpg"},
+    {"image/png",            "png"},
+    {"text/css",             "css"},
+    {"text/html",            "html htm"},
+    {"text/javascript",      "js"},
+    {"text/plain",           "txt asc"},
+    {"video/mpeg",           "mpeg mpe mpg"},
+    {"video/quicktime",      "qt mov"},
+    {"video/x-msvideo",      "avi"},
+    NULL
+};
 
 static struct jhttp_base base;
 
@@ -565,6 +592,40 @@ void jhttp_close_connection(struct jhttp_connection *c)
 }
 
 
+void jhttp_init_mimetype_table()
+{
+    struct jhttp_mimetype *mime = extension_map;
+    char *skey, *ekey;
+    char key[16];
+    int len;
+
+    while (mime != NULL) {
+        skey = ekey = mime->exts;
+
+        while (*ekey) {
+
+            if (*ekey == ' ') {
+                len = ekey - skey;
+                memcpy(key, skey, len);
+                key[len] = '\0';
+
+                jk_hash_insert(base.mimetype_table, key, len, mime->mime);
+                printf("Insert %s => %s to mimetype table\n", key, mime->mime);
+                while (*ekey == ' ') {
+                    ekey++;
+                }
+                skey = ekey;
+            }
+
+            ekey++;
+        }
+
+        jk_hash_insert(base.mimetype_table, skey, ekey - skey, mime->mime);
+        printf("Insert %s => %s to mimetype table\n", skey, mime->mime);
+    }
+}
+
+
 int jhttp_base_init()
 {
     struct sockaddr_in addr;
@@ -611,6 +672,14 @@ int jhttp_base_init()
         fprintf(stderr, "Fatal: failed to create thread pool\n");
         return -1;
     }
+
+    base.mimetype_table = jk_hash_new(0);
+    if (JHTTP_IS_NULL(base.mimetype_table)) {
+        fprintf(stderr, "Fatal: failed to create mimetype table\n");
+        return -1;
+    }
+
+    jhttp_init_mimetype_table();
 
     return 0;
 }
