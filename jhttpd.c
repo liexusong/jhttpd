@@ -18,6 +18,13 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef linux
+# include <linux/version.h>
+# if LINUX_VERSION_CODE >= KERNEL_VERSION(2,2,0)
+# define JHTTP_HAVE_SENDFILE 1
+# endif
+#endif
+
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -33,6 +40,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <getopt.h>
+
+#ifdef JHTTP_HAVE_SENDFILE
+# include <sys/sendfile.h>
+#endif
 
 #include "jk_thread_pool.h"
 #include "jk_hash.h"
@@ -216,6 +227,8 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
     int fd = -1;
     int send_header_only = 0;
     int wbytes, nwrite = 0, n;
+    off_t offset, _offset;
+    int sendmax;
     char *keepalive;
     fd_set set;
     struct timeval tv;
@@ -350,6 +363,49 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         return JHTTP_DONE;
     }
 
+
+#ifdef JHTTP_HAVE_SENDFILE
+
+    offset = 0;
+    wbytes = (int)stbuf.st_size;
+
+    for ( ;; ) {
+
+        sendmax = wbytes > (1 << 20) ? (1 << 20) : wbytes;
+        _offset = offset;
+
+        FD_ZERO(&set);
+        FD_SET(c->sock, &set);
+
+        result = select(c->sock + 1, NULL, &set, NULL, &tv);
+        if (result == 0) {
+            fprintf(stderr, "Notice: connection(%d) was timeout and closing\n", c->sock);
+            goto eflag;
+        }
+
+        n = sendfile(c->sock, fd, &_offset, sendmax);
+        switch (n) {
+        case 0:
+            goto eflag;
+            break;
+        case -1:
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                goto eflag;
+            }
+            break;
+        default:
+            offset += n;
+            wbytes -= n;
+            break;
+        }
+
+        if (wbytes <= 0) {
+            break;
+        }
+    }
+
+#else
+
     for ( ;; ) {
 
         FD_ZERO(&set);
@@ -386,7 +442,10 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         }
     }
 
+#endif
+
     close(fd);
+
 
     if (jk_hash_find(c->headers, "connection",
         sizeof("connection")-1, (void **)&keepalive) == JK_HASH_OK)
