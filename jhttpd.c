@@ -75,6 +75,7 @@ struct jhttp_base {
     int threads;
     int daemon;
     char *root;
+    char *default_charset;
     int timeout;
     jk_thread_pool_t *thread_pool;
     jk_hash_t *mimetype_table;
@@ -283,10 +284,11 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
     
             wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
                                      "Content-Length: %d" JHTTP_CRLF
-                                     "Content-Type: %s" JHTTP_CRLF
+                                     "Content-Type: %s; charset=%s" JHTTP_CRLF
                                      "Last-Modified: %s" JHTTP_CRLF
                                      "Server: JHTTPD" JHTTP_CRLFCRLF,
-                                     (int)stbuf.st_size, mimetype, datebuf);
+                                     (int)stbuf.st_size, mimetype,
+                                     base.default_charset, datebuf);
     
             if (c->method != JHTTP_METHOD_HEAD) {
                 fd = open(c->uri, O_RDONLY);
@@ -340,7 +342,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
 
         FD_ZERO(&set);
         FD_SET(c->sock, &set);
-        
+
         result = select(c->sock + 1, NULL, &set, NULL, &tv);
         if (result == 0) {
             fprintf(stderr, "Notice: connection(%d) was timeout and closing\n", c->sock);
@@ -823,6 +825,7 @@ static void jhttp_usage()
     fprintf(stderr, "-p, --port=PORT     Server listen port, default 80\n");
     fprintf(stderr, "-t, --threads=NUMS  Worker thread numbers\n");
     fprintf(stderr, "-r, --root=PATH     The server root path\n");
+    fprintf(stderr, "-s, --charset=STR   Default charset\n");
     fprintf(stderr, "-o, --timeout=MSEC  Connection timeout msec\n");
     fprintf(stderr, "-h, --help          Show the help\n");
     exit(0);
@@ -835,6 +838,7 @@ void jhttp_default_options()
     base.daemon = 0;
     base.threads = JHTTP_WORKER_THREADS;
     base.root = "./";
+    base.default_charset = "UTF-8";
     base.timeout = 5000;
 }
 
@@ -847,12 +851,13 @@ int jhttp_options(int argc, char *argv[])
         {"daemon",      0,  NULL,  'd'},
         {"threads",     0,  NULL,  't'},
         {"root",        0,  NULL,  'r'},
+        {"charset",     0,  NULL,  's'},
         {"timeout",     0,  NULL,  'o'},
         {"help",        0,  NULL,  'h'},
         {NULL,          0,  NULL,    0}
     };
 
-    while ((opt = getopt_long(argc, argv, "p:dt:r:o:h", lopts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "p:dt:r:s:o:h", lopts, NULL)) != -1) {
         switch (opt) {
         case 'p':
             base.port = atoi(optarg);
@@ -873,6 +878,9 @@ int jhttp_options(int argc, char *argv[])
             break;
         case 'r':
             base.root = strdup(optarg);
+            break;
+        case 's':
+            base.default_charset = strdup(optarg);
             break;
         case 'o':
             base.timeout = atoi(optarg);
@@ -942,4 +950,5 @@ int main(int argc, char *argv[])
 
     exit(0);
 }
+
 
