@@ -209,7 +209,9 @@ void jhttp_reset_connection(struct jhttp_connection *c)
 
 int jhttp_connection_send_file(struct jhttp_connection *c)
 {
-    char buffer[2048];
+    char buffer[2048], timebuf[128];
+    time_t now;
+    struct tm tm;
     struct stat stbuf;
     int fd = -1;
     int send_header_only = 0;
@@ -219,15 +221,22 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
     struct timeval tv;
     int result;
 
+    /* current datetime */
+    now = time((time_t *)0);
+    strftime(timebuf, sizeof(timebuf), "%a, %d %b %Y %H:%M:%S GMT",
+                                                           gmtime_r(&now, &tm));
+
     if (stat(c->uri, &stbuf) == -1) {
         wbytes = sprintf(buffer, "HTTP/1.1 404 Not Found" JHTTP_CRLF
-                                 "Server: JHTTPD" JHTTP_CRLFCRLF);
+                                 "Date: %s" JHTTP_CRLF
+                                 "Server: JHTTPD" JHTTP_CRLFCRLF, timebuf);
         send_header_only = 1;
 
     } else if (S_ISDIR(stbuf.st_mode)) {
 
         wbytes = sprintf(buffer, "HTTP/1.1 403 Forbidden" JHTTP_CRLF
-                                 "Server: JHTTPD" JHTTP_CRLFCRLF);
+                                 "Date: %s" JHTTP_CRLF
+                                 "Server: JHTTPD" JHTTP_CRLFCRLF, timebuf);
         send_header_only = 1;
 
     } else {
@@ -252,7 +261,8 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
                     if ((int)lmt >= (int)stbuf.st_mtime) {
                         wbytes = sprintf(buffer,
                                      "HTTP/1.1 304 Not Modified" JHTTP_CRLF
-                                     "Server: JHTTPD" JHTTP_CRLFCRLF);
+                                     "Date: %s" JHTTP_CRLF
+                                     "Server: JHTTPD" JHTTP_CRLFCRLF, timebuf);
                         send_header_only = 1;
 
                         break;
@@ -286,16 +296,18 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
                                      "Content-Length: %d" JHTTP_CRLF
                                      "Content-Type: %s; charset=%s" JHTTP_CRLF
                                      "Last-Modified: %s" JHTTP_CRLF
+                                     "Date: %s" JHTTP_CRLF
                                      "Server: JHTTPD" JHTTP_CRLFCRLF,
                                      (int)stbuf.st_size, mimetype,
-                                     base.default_charset, datebuf);
+                                     base.default_charset, datebuf, timebuf);
     
             if (c->method != JHTTP_METHOD_HEAD) {
                 fd = open(c->uri, O_RDONLY);
                 if (JHTTP_IS_ERR(fd)) {
                     wbytes = sprintf(buffer,
                                 "HTTP/1.1 500 Internal Server Error" JHTTP_CRLF
-                                "Server: JHTTPD" JHTTP_CRLFCRLF);
+                                "Date: %s" JHTTP_CRLF
+                                "Server: JHTTPD" JHTTP_CRLFCRLF, timebuf);
                     send_header_only = 1;
                 }
             }
