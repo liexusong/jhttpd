@@ -338,8 +338,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         FD_SET(c->sock, &set);
 
         result = select(c->sock + 1, NULL, &set, NULL, &tv);
-        if (result == 0) {
-            fprintf(stderr, "Notice: connection(%d) was timeout and closing\n", c->sock);
+        if (result <= 0) {
             goto eflag;
         }
 
@@ -378,8 +377,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         FD_SET(c->sock, &set);
 
         result = select(c->sock + 1, NULL, &set, NULL, &tv);
-        if (result == 0) {
-            fprintf(stderr, "Notice: connection(%d) was timeout and closing\n", c->sock);
+        if (result <= 0) {
             goto eflag;
         }
 
@@ -412,8 +410,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         FD_SET(c->sock, &set);
 
         result = select(c->sock + 1, NULL, &set, NULL, &tv);
-        if (result == 0) {
-            fprintf(stderr, "Notice: connection(%d) was timeout and closing\n", c->sock);
+        if (result <= 0) {
             goto eflag;
         }
 
@@ -656,8 +653,7 @@ int jhttp_connection_read_header(struct jhttp_connection *c)
         FD_SET(c->sock, &set);
 
         result = select(c->sock + 1, &set, NULL, NULL, &tv);
-        if (result == 0) {
-            fprintf(stderr, "Notice: connection(%d) was timeout and closing\n", c->sock);
+        if (result <= 0) {
             return JHTTP_DONE;
         }
 
