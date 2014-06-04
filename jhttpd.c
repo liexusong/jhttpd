@@ -230,47 +230,75 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
         send_header_only = 1;
 
     } else {
-        char datebuf[128], extbuf[16], *ext, *mimetype = "text/plain";
+        char *last_modified;
+        char datebuf[128];
+        char extbuf[16], *ext;
+        char *mimetype = "text/plain";
         int len;
 
-        strftime(datebuf, sizeof(datebuf), "%a, %d %b %Y %H:%M:%S GMT",
-                                                     gmtime(&(stbuf.st_mtime)));
+        do {
+            if (jk_hash_find(c->headers, "if-modified-since",
+                sizeof("if-modified-since")-1, (void **)&last_modified)
+                == JK_HASH_OK)
+            {
+                struct tm tm;
+    
+                if (strptime(last_modified, "%a, %d %b %Y %H:%M:%S %Z", &tm)
+                    != NULL)
+                {
+                    time_t lmt = mktime(&tm) + 3600 * 8; /* fix 8 hours */
 
-        /* find the mime type */
-        for (ext = c->uri + 1; *ext && *ext != '.'; ext++);
+                    if ((int)lmt >= (int)stbuf.st_mtime) {
+                        wbytes = sprintf(buffer,
+                                     "HTTP/1.1 304 Not Modified" JHTTP_CRLF
+                                     "Server: JHTTPD" JHTTP_CRLFCRLF);
+                        send_header_only = 1;
 
-        if (*ext == '.') { /* found extension */
-
-            for (len = 0, ext += 1; jhttp_is_letter(*ext); ext++) {
-                if (*ext >= 'A' && *ext <= 'Z') { /* upper to lower */
-                    extbuf[len++] = *ext + ('a' - 'Z');
-                } else {
-                    extbuf[len++] = *ext;
+                        break;
+                    }
+                }
+            }
+    
+            strftime(datebuf, sizeof(datebuf), "%a, %d %b %Y %H:%M:%S GMT",
+                                                    gmtime(&(stbuf.st_mtime)));
+    
+            /* find the mime type */
+            for (ext = c->uri + 1; *ext && *ext != '.'; ext++);
+    
+            if (*ext == '.') { /* found extension */
+    
+                for (len = 0, ext += 1; jhttp_is_letter(*ext); ext++) {
+                    if (*ext >= 'A' && *ext <= 'Z') { /* upper to lower */
+                        extbuf[len++] = *ext + ('a' - 'Z');
+                    } else {
+                        extbuf[len++] = *ext;
+                    }
+                }
+    
+                if (len > 0) {
+                    jk_hash_find(base.mimetype_table, extbuf, len,
+                                 (void **)&mimetype);
+                }
+            }
+    
+            wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
+                                     "Content-Length: %d" JHTTP_CRLF
+                                     "Content-Type: %s" JHTTP_CRLF
+                                     "Last-Modified: %s" JHTTP_CRLF
+                                     "Server: JHTTPD" JHTTP_CRLFCRLF,
+                                     (int)stbuf.st_size, mimetype, datebuf);
+    
+            if (c->method != JHTTP_METHOD_HEAD) {
+                fd = open(c->uri, O_RDONLY);
+                if (JHTTP_IS_ERR(fd)) {
+                    wbytes = sprintf(buffer,
+                                "HTTP/1.1 500 Internal Server Error" JHTTP_CRLF
+                                "Server: JHTTPD" JHTTP_CRLFCRLF);
+                    send_header_only = 1;
                 }
             }
 
-            if (len > 0) {
-                jk_hash_find(base.mimetype_table, extbuf, len,
-                             (void **)&mimetype);
-            }
-        }
-
-        wbytes = sprintf(buffer, "HTTP/1.1 200 OK" JHTTP_CRLF
-                                 "Content-Length: %d" JHTTP_CRLF
-                                 "Content-Type: %s" JHTTP_CRLF
-                                 "Last-Modified: %s" JHTTP_CRLF
-                                 "Server: JHTTPD" JHTTP_CRLFCRLF,
-                                 (int)stbuf.st_size, mimetype, datebuf);
-
-        if (c->method != JHTTP_METHOD_HEAD) {
-            fd = open(c->uri, O_RDONLY);
-            if (JHTTP_IS_ERR(fd)) {
-                wbytes = sprintf(buffer,
-                                 "HTTP/1.1 500 Internal Server Error" JHTTP_CRLF
-                                 "Server: JHTTPD" JHTTP_CRLFCRLF);
-                send_header_only = 1;
-            }
-        }
+        } while (0);
     }
 
     tv.tv_sec = base.timeout / 1000;
@@ -357,9 +385,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
 
     return JHTTP_DONE;
 
-
 eflag:
-
     if (!JHTTP_IS_ERR(fd)) {
         close(fd);
     }
