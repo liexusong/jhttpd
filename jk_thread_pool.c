@@ -161,6 +161,9 @@ void jk_thread_pool_destroy(jk_thread_pool_t *thd)
     task = thd->tasks;
     while (task) {
         next = task->next;
+        if (task->finish) { /* may be free user memory */
+            task->finish(task->arg);
+        }
         free(task);
         task = next;
         thd->task_nums--;
