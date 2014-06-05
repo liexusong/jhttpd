@@ -176,14 +176,17 @@ int jhttp_set_nonblocking(int fd)
 }
 
 
+/*
+ * read HTTP header was complete ?
+ */
 int jhttp_connection_header_complete(struct jhttp_connection *c)
 {
     char *ptr = c->rbuf;
     enum {
-        jhttp_state_0,
-        jhttp_state_1,
-        jhttp_state_2,
-        jhttp_state_3,
+        jhttp_state_0,  /* find "\r" */
+        jhttp_state_1,  /* find "\n" */
+        jhttp_state_2,  /* find "\r" */
+        jhttp_state_3,  /* find "\n" */
     } state = jhttp_state_0;
 
     while (ptr <= c->rpos) {
@@ -226,12 +229,15 @@ int jhttp_connection_header_complete(struct jhttp_connection *c)
 
 void jhttp_reset_connection(struct jhttp_connection *c)
 {
+    int tomove;
+
     jk_hash_free(c->headers);
     
     if (c->rpos > c->end_header) {
-        int tomove = c->rpos - c->end_header;
+        tomove = c->rpos - c->end_header;
         memmove(c->rbuf, c->end_header + 1, tomove);
         c->rpos = c->rbuf + tomove;
+
     } else {
         c->rpos = c->rbuf;
     }
@@ -251,7 +257,7 @@ void jhttp_reset_connection(struct jhttp_connection *c)
 
 int jhttp_connection_send_file(struct jhttp_connection *c)
 {
-    char buffer[2048], timebuf[128];
+    char buffer[2048], date_buf[128];
     time_t now;
     struct tm tm;
     struct stat stbuf;
@@ -267,7 +273,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
 
     /* current datetime */
     now = time((time_t *)0);
-    strftime(timebuf, sizeof(timebuf), "%a, %d %b %Y %H:%M:%S GMT",
+    strftime(date_buf, sizeof(date_buf), "%a, %d %b %Y %H:%M:%S GMT",
                                                            gmtime_r(&now, &tm));
 
     if (stat(c->uri, &stbuf) == -1) {
@@ -275,7 +281,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
                                  "Date: %s" JHTTP_CRLF
                                  "Content-Length: %d" JHTTP_CRLF
                                  "Server: JHTTPD" JHTTP_CRLFCRLF "%s",
-                                 timebuf, sizeof(error_404_page) - 1,
+                                 date_buf, sizeof(error_404_page) - 1,
                                  error_404_page);
 
         send_header_only = 1;
@@ -286,19 +292,23 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
                                  "Date: %s" JHTTP_CRLF
                                  "Content-Length: %d" JHTTP_CRLF
                                  "Server: JHTTPD" JHTTP_CRLFCRLF "%s", 
-                                 timebuf, sizeof(error_403_page) - 1,
+                                 date_buf, sizeof(error_403_page) - 1,
                                  error_403_page);
 
         send_header_only = 1;
 
     } else {
         char *last_modified;
-        char datebuf[128];
+        char modified_buf[128];
         char extbuf[16], *ext;
         char *mimetype = "text/plain";
         int len;
 
         do {
+
+            strftime(modified_buf, sizeof(modified_buf),
+                        "%a, %d %b %Y %H:%M:%S GMT", gmtime(&(stbuf.st_mtime)));
+
             if (jk_hash_find(c->headers, "if-modified-since",
                 sizeof("if-modified-since")-1, (void **)&last_modified)
                 == JK_HASH_OK)
@@ -314,16 +324,16 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
                         wbytes = sprintf(buffer,
                                      "HTTP/1.1 304 Not Modified" JHTTP_CRLF
                                      "Date: %s" JHTTP_CRLF
-                                     "Server: JHTTPD" JHTTP_CRLFCRLF, timebuf);
+                                     "Last-Modified: %s" JHTTP_CRLF
+                                     "Server: JHTTPD" JHTTP_CRLFCRLF,
+                                     date_buf, modified_buf);
+
                         send_header_only = 1;
 
                         break;
                     }
                 }
             }
-    
-            strftime(datebuf, sizeof(datebuf), "%a, %d %b %Y %H:%M:%S GMT",
-                                                    gmtime(&(stbuf.st_mtime)));
     
             /* find the mime type */
             for (ext = c->uri + 1; *ext && *ext != '.'; ext++);
@@ -351,7 +361,8 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
                                      "Date: %s" JHTTP_CRLF
                                      "Server: JHTTPD" JHTTP_CRLFCRLF,
                                      (int)stbuf.st_size, mimetype,
-                                     base.default_charset, datebuf, timebuf);
+                                     base.default_charset, modified_buf,
+                                     date_buf);
     
             if (c->method != JHTTP_METHOD_HEAD) {
                 fd = open(c->uri, O_RDONLY);
@@ -361,7 +372,7 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
                                 "Date: %s" JHTTP_CRLF
                                 "Content-Length: %d" JHTTP_CRLF
                                 "Server: JHTTPD" JHTTP_CRLFCRLF "%s",
-                                timebuf, sizeof(error_500_page) - 1,
+                                date_buf, sizeof(error_500_page) - 1,
                                 error_500_page);
 
                     send_header_only = 1;
@@ -678,7 +689,7 @@ int jhttp_connection_read_header(struct jhttp_connection *c)
 
             temp = jrealloc(c->rbuf, nsize);
             if (JHTTP_IS_NULL(temp)) {
-                fprintf(stderr, "Error: not enough memory to jrealloc read buffer\n");
+                fprintf(stderr, "Error: not enough memory to realloc buffer\n");
                 return JHTTP_ERR;
             }
 
@@ -1064,5 +1075,4 @@ int main(int argc, char *argv[])
 
     exit(0);
 }
-
 
