@@ -77,6 +77,7 @@
 #define JHTTP_CRLF        "\r\n"
 #define JHTTP_CRLFCRLF    "\r\n\r\n"
 
+
 struct jhttp_connection;
 typedef jhttp_connection_callback(struct jhttp_connection *c);
 
@@ -109,6 +110,36 @@ struct jhttp_mimetype {
 
 
 int jhttp_connection_read_header(struct jhttp_connection *c);
+
+static char error_403_page[] =
+"<html>" JHTTP_CRLF
+"<head><title>403 Forbidden</title></head>" JHTTP_CRLF
+"<body bgcolor=\"white\">" JHTTP_CRLF
+"<center><h1>403 Forbidden</h1></center>" JHTTP_CRLF
+"<hr><center>JHTTPD</center>" JHTTP_CRLF
+"</body>" JHTTP_CRLF
+"</html>" JHTTP_CRLF
+;
+
+static char error_404_page[] =
+"<html>" JHTTP_CRLF
+"<head><title>404 Not Found</title></head>" JHTTP_CRLF
+"<body bgcolor=\"white\">" JHTTP_CRLF
+"<center><h1>404 Not Found</h1></center>" JHTTP_CRLF
+"<hr><center>JHTTPD</center>" JHTTP_CRLF
+"</body>" JHTTP_CRLF
+"</html>" JHTTP_CRLF
+;
+
+static char error_500_page[] =
+"<html>" JHTTP_CRLF
+"<head><title>500 Internal Server Error</title></head>" JHTTP_CRLF
+"<body bgcolor=\"white\">" JHTTP_CRLF
+"<center><h1>500 Internal Server Error</h1></center>" JHTTP_CRLF
+"<hr><center>JHTTPD</center>" JHTTP_CRLF
+"</body>" JHTTP_CRLF
+"</html>" JHTTP_CRLF
+;
 
 static struct jhttp_mimetype extension_map[] = {
     {"application/ogg",      "ogg"},
@@ -242,14 +273,22 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
     if (stat(c->uri, &stbuf) == -1) {
         wbytes = sprintf(buffer, "HTTP/1.1 404 Not Found" JHTTP_CRLF
                                  "Date: %s" JHTTP_CRLF
-                                 "Server: JHTTPD" JHTTP_CRLFCRLF, timebuf);
+                                 "Content-Length: %d" JHTTP_CRLF
+                                 "Server: JHTTPD" JHTTP_CRLFCRLF "%s",
+                                 timebuf, sizeof(error_404_page) - 1,
+                                 error_404_page);
+
         send_header_only = 1;
 
     } else if (S_ISDIR(stbuf.st_mode)) {
 
         wbytes = sprintf(buffer, "HTTP/1.1 403 Forbidden" JHTTP_CRLF
                                  "Date: %s" JHTTP_CRLF
-                                 "Server: JHTTPD" JHTTP_CRLFCRLF, timebuf);
+                                 "Content-Length: %d" JHTTP_CRLF
+                                 "Server: JHTTPD" JHTTP_CRLFCRLF "%s", 
+                                 timebuf, sizeof(error_403_page) - 1,
+                                 error_403_page);
+
         send_header_only = 1;
 
     } else {
@@ -320,7 +359,11 @@ int jhttp_connection_send_file(struct jhttp_connection *c)
                     wbytes = sprintf(buffer,
                                 "HTTP/1.1 500 Internal Server Error" JHTTP_CRLF
                                 "Date: %s" JHTTP_CRLF
-                                "Server: JHTTPD" JHTTP_CRLFCRLF, timebuf);
+                                "Content-Length: %d" JHTTP_CRLF
+                                "Server: JHTTPD" JHTTP_CRLFCRLF "%s",
+                                timebuf, sizeof(error_500_page) - 1,
+                                error_500_page);
+
                     send_header_only = 1;
                 }
             }
@@ -629,13 +672,13 @@ int jhttp_connection_read_header(struct jhttp_connection *c)
             int rpos = c->rpos - c->rbuf;
 
             if (nsize > JHTTP_BUFF_MAX_SIZE) {
-                fprintf(stderr, "Notcie: request http header too big\n");
+                fprintf(stderr, "Error: request http header too big\n");
                 return JHTTP_ERR;
             }
 
             temp = jrealloc(c->rbuf, nsize);
             if (JHTTP_IS_NULL(temp)) {
-                fprintf(stderr, "Notcie: not enough memory to jrealloc read buffer\n");
+                fprintf(stderr, "Error: not enough memory to jrealloc read buffer\n");
                 return JHTTP_ERR;
             }
 
@@ -659,7 +702,7 @@ int jhttp_connection_read_header(struct jhttp_connection *c)
 
         nbytes = read(c->sock, c->rpos, remain);
         if (nbytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            fprintf(stderr, "Notcie: failed to read data from connection\n");
+            fprintf(stderr, "Error: failed to read data from connection\n");
             return JHTTP_ERR;
         } else if (nbytes == 0) {
             return JHTTP_DONE;
@@ -844,7 +887,7 @@ void jhttp_main_loop()
         tv.tv_usec = 0;
 
         if (select(base.sock + 1, &set, NULL, NULL, &tv) == -1) {
-            fprintf(stderr, "Notice: select(socket) failed\n");
+            fprintf(stderr, "Error: select(socket) failed\n");
             continue;
         }
 
@@ -858,14 +901,14 @@ void jhttp_main_loop()
             }
     
             if (jhttp_set_nonblocking(sock) == -1) {
-                fprintf(stderr, "Notice: failed to set socket to nonblocking\n");
+                fprintf(stderr, "Error: failed to set socket to nonblocking\n");
                 close(sock);
                 continue;
             }
     
             c = jhttp_get_connection(sock);
             if (JHTTP_IS_NULL(c)) {
-                fprintf(stderr, "Notice: failed to get connection and exiting\n");
+                fprintf(stderr, "Error: failed to get connection and exiting\n");
                 close(sock);
                 continue;
             }
@@ -873,7 +916,7 @@ void jhttp_main_loop()
             ret = jk_thread_pool_push(base.thread_pool,
                                       &jhttp_connection_loop, c, NULL);
             if (JHTTP_IS_ERR(ret)) {
-                fprintf(stderr, "Notice: failed to process connection and exiting\n");
+                fprintf(stderr, "Error: failed to process connection and exiting\n");
                 jhttp_close_connection(c);
                 continue;
             }
@@ -904,7 +947,7 @@ void jhttp_default_options()
     base.port = JHTTP_DEFAULT_PORT;
     base.daemon = 0;
     base.threads = JHTTP_WORKER_THREADS;
-    base.root = "./";
+    base.root = "/var/www";
     base.default_charset = "UTF-8";
     base.timeout = 5000;
 }
@@ -1014,6 +1057,10 @@ int main(int argc, char *argv[])
     }
 
     jhttp_main_loop();
+
+    close(base.sock);
+    jk_hash_free(base.mimetype_table);
+    jk_thread_pool_destroy(base.thread_pool);
 
     exit(0);
 }
