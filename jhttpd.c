@@ -525,14 +525,25 @@ int jhttp_connection_read_post(struct jhttp_connection *c)
     fd_set set;
     struct timeval tv;
     int result;
-    int nbytes = c->post_len, rbytes = 0, n;
+    int nbytes = c->post_len + 4, rbytes = 0, n;
 
-    c->post_data = jmalloc(c->post_len);
+    c->post_data = jmalloc(c->post_len + 4); /* include CRLFCRLF */
     if (c->post_data == NULL) {
         return JHTTP_ERR;
     }
 
-    for ( ;; ) {
+    if (c->rpos > c->end_header) { /* post data may be readed */
+        int remain = c->rpos - c->end_header;
+        int ncopy = remain > nbytes ? nbytes : remain;
+
+        memcpy(c->post_data, c->end_header + 1, ncopy);
+
+        c->end_header += ncopy;
+        nbytes -= ncopy;
+        rbytes += ncopy;
+    }
+
+    while (nbytes > 0) {
         tv.tv_sec = base.timeout / 1000;
         tv.tv_usec = (base.timeout % 1000) * 1000;
 
@@ -554,10 +565,6 @@ int jhttp_connection_read_post(struct jhttp_connection *c)
 
         rbytes += n;
         nbytes -= n;
-
-        if (nbytes <= 0) { /* finish read post data */
-            break;
-        }
     }
 
     c->handler = jhttp_connection_send_file;
