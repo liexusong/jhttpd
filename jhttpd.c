@@ -67,6 +67,7 @@
 #define JHTTP_METHOD_UNKNOW   0
 #define JHTTP_METHOD_GET      1
 #define JHTTP_METHOD_HEAD     2
+#define JHTTP_METHOD_POST     3
 
 #define JHTTP_DEFAULT_RBUF_SIZE    512
 #define JHTTP_DEFAULT_BUFF_INCR    128
@@ -100,6 +101,8 @@ struct jhttp_connection {
     int method;
     jk_hash_t *headers;
     char *end_header;
+    char *post_data;
+    int post_len;
     jhttp_connection_callback *handler;
 };
 
@@ -517,6 +520,52 @@ eflag:
 }
 
 
+int jhttp_connection_read_post(struct jhttp_connection *c)
+{
+    fd_set set;
+    struct timeval tv;
+    int result;
+    int nbytes = c->post_len, rbytes = 0, n;
+
+    c->post_data = jmalloc(c->post_len);
+    if (c->post_data == NULL) {
+        return JHTTP_ERR;
+    }
+
+    for ( ;; ) {
+        tv.tv_sec = base.timeout / 1000;
+        tv.tv_usec = (base.timeout % 1000) * 1000;
+
+        FD_ZERO(&set);
+        FD_SET(c->sock, &set);
+
+        result = select(c->sock + 1, &set, NULL, NULL, &tv);
+        if (result <= 0) {
+            return JHTTP_DONE;
+        }
+
+        n = read(c->sock, c->post_data + rbytes, nbytes);
+        if (nbytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            fprintf(stderr, "Error: failed to read data from connection\n");
+            return JHTTP_ERR;
+        } else if (nbytes == 0) {
+            return JHTTP_DONE;
+        }
+
+        rbytes += n;
+        nbytes -= n;
+
+        if (nbytes <= 0) { /* finish read post data */
+            break;
+        }
+    }
+
+    c->handler = jhttp_connection_send_file;
+
+    return JHTTP_OK;
+}
+
+
 char *
 jhttp_connection_parse_request_line(struct jhttp_connection *c)
 {
@@ -539,6 +588,8 @@ jhttp_connection_parse_request_line(struct jhttp_connection *c)
                     c->method = JHTTP_METHOD_GET;
                 } else if (!strncasecmp(found, "HEAD", 4)) {
                     c->method = JHTTP_METHOD_HEAD;
+                } else if (!strncasecmp(found, "POST", 4)) {
+                    c->method = JHTTP_METHOD_POST;
                 } else {
                     return NULL;
                 }
@@ -660,6 +711,22 @@ int jhttp_connection_parse_header(struct jhttp_connection *c)
         }
     }
 
+    if (c->method == JHTTP_METHOD_POST) {
+        int post_len;
+        char *ptr;
+
+        if (jk_hash_find(c->headers, "content-length",
+            sizeof("content-length")-1, &ptr) == JK_HASH_OK)
+        {
+            post_len = atoi(ptr);
+            if (post_len > 0) {
+                c->post_len = post_len;
+                c->handler = jhttp_connection_read_post;
+                return JHTTP_OK;
+            }
+        }
+    }
+
     c->handler = jhttp_connection_send_file;
 
     return JHTTP_OK;
@@ -741,6 +808,8 @@ struct jhttp_connection *jhttp_get_connection(int sock)
     c->method = JHTTP_METHOD_UNKNOW;
     c->headers = jk_hash_new(0, NULL, NULL);
     c->end_header = NULL;
+    c->post_data = NULL;
+    c->post_len = 0;
     c->handler = &jhttp_connection_read_header;
 
     c->rbuf = jmalloc(JHTTP_DEFAULT_RBUF_SIZE);
@@ -761,6 +830,9 @@ void jhttp_close_connection(struct jhttp_connection *c)
     close(c->sock);
     jk_hash_free(c->headers);
     jfree(c->rbuf);
+    if (c->post_data) {
+        jfree(c->post_data);
+    }
     jfree(c);
     return;
 }
