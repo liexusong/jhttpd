@@ -716,7 +716,7 @@ int jhttp_connection_parse_header(struct jhttp_connection *c)
         char *ptr;
 
         if (jk_hash_find(c->headers, "content-length",
-            sizeof("content-length")-1, &ptr) == JK_HASH_OK)
+            sizeof("content-length")-1, (void **)&ptr) == JK_HASH_OK)
         {
             post_len = atoi(ptr);
             if (post_len > 0) {
